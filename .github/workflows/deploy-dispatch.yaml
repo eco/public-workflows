@@ -1,0 +1,63 @@
+name: Deploy Service
+
+on:
+  workflow_call:
+    inputs:
+      git_org:
+        required: true
+        type: string
+      git_repo:
+        required: true
+        type: string
+      repo_workflow_file:
+        required: true
+        type: string
+      ghsha:
+        required: true
+        type: string
+jobs:
+  deploy:
+      runs-on: ubuntu-latest
+      steps:
+        - name: Trigger Deploy and Wait for Completion
+          run: |
+            # Trigger the workflow dispatch
+            response=$(curl -X POST \
+              -H "Authorization: Bearer ${{ secrets.MY_GITHUB_TOKEN }}" \
+              -d '{
+                    "ref": "main",
+                    "inputs": {
+                      "ghsha": "${{ inputs.ghsha }}"
+                    }
+                  }' \
+              https://api.github.com/repos/${{ inputs.git_org }}/${{ inputs.git_repo }}/actions/workflows/${{ inputs.repo_workflow_file }}/dispatches)
+
+            # Wait a bit for the workflow to trigger and then get the run details
+            sleep 10
+
+            run_details=$(curl -s -H "Authorization: Bearer ${{ secrets.MY_GITHUB_TOKEN }}" \
+              https://api.github.com/repos/${{ inputs.git_org }}/${{ inputs.git_repo }}/actions/runs)
+
+            run_id=$(echo "$run_details" | jq -r '.workflow_runs[0].id')
+
+            while true; do
+              status=$(curl -s -H "Authorization: Bearer ${{ secrets.MY_GITHUB_TOKEN }}" \
+                https://api.github.com/repos/${{ inputs.git_org }}/${{ inputs.git_repo }}/actions/runs/$run_id)
+
+              conclusion=$(echo "$status" | jq -r '.conclusion')
+
+              if [[ "$conclusion" != "null" ]]; then
+                echo "Most Recent Run ID: $run_id"
+                echo "Workflow Status: $conclusion"
+                
+                if [[ "$conclusion" == "failure" || "$conclusion" == "cancelled" ]]; then
+                  echo "Workflow failed or was cancelled."
+                  exit 1
+                fi
+                
+                break
+              else
+                echo "Workflow still running... waiting for completion..."
+                sleep 10
+              fi
+            done
